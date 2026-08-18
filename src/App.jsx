@@ -39,6 +39,24 @@ const DEFAULT_CONTENT = { color: "#B7AE9C", heating: "Details coming soon.", ing
 
 function money(n) { return `$${n.toFixed(2)}`; }
 
+// Remembers this customer on this device/browser after their first order —
+// no password, just "welcome back" the next time they open the app here.
+const PROFILE_KEY = "kefi-customer-profile";
+function loadSavedProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+function saveProfile(profile) {
+  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); } catch { /* ignore */ }
+}
+function clearSavedProfile() {
+  try { localStorage.removeItem(PROFILE_KEY); } catch { /* ignore */ }
+}
+
 async function apiFetch(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -59,9 +77,11 @@ export default function App() {
   const [screen, setScreen] = useState("menu"); // menu | cart | checkout | status | product | contact | orders
   const [activeCat, setActiveCat] = useState("Mains");
   const [cart, setCart] = useState({}); // { [backendItemId]: qty }
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [address, setAddress] = useState("");
+  const savedProfile = loadSavedProfile();
+  const [name, setName] = useState(savedProfile?.name || "");
+  const [phone, setPhone] = useState(savedProfile?.phone || "");
+  const [address, setAddress] = useState(savedProfile?.address || "");
+  const [hasProfile, setHasProfile] = useState(!!savedProfile);
   const [payment, setPayment] = useState(null); // "cash" | "card"
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -73,8 +93,26 @@ export default function App() {
   const [menuLoading, setMenuLoading] = useState(true);
   const [menuError, setMenuError] = useState("");
 
-  const [placedOrder, setPlacedOrder] = useState(null); // { orderId, orderNumber }
-  const [liveStatus, setLiveStatus] = useState(null);   // polled from backend
+  const [activeOrderId, setActiveOrderId] = useState(null); // whichever order the status screen is showing
+  const [liveStatus, setLiveStatus] = useState(null);       // polled from backend
+
+  const [orderHistory, setOrderHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+
+  const loadHistory = useCallback(async () => {
+    if (!phone) return;
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const data = await apiFetch(`/orders?phone=${encodeURIComponent(phone)}`);
+      setOrderHistory(data);
+    } catch {
+      setHistoryError("Couldn't load your past orders. The server may be waking up — try again in a moment.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [phone]);
 
   const loadMenu = useCallback(async () => {
     setMenuLoading(true);
@@ -97,11 +135,12 @@ export default function App() {
 
   // Poll order status once an order has been placed and we're on the status screen.
   useEffect(() => {
-    if (screen !== "status" || !placedOrder) return;
+    if (screen !== "status" || !activeOrderId) return;
     let cancelled = false;
+    setLiveStatus(null); // show a loading state while the first poll for THIS order is in flight
     async function poll() {
       try {
-        const data = await apiFetch(`/orders/${placedOrder.orderId}?phone=${encodeURIComponent(phone)}`);
+        const data = await apiFetch(`/orders/${activeOrderId}?phone=${encodeURIComponent(phone)}`);
         if (!cancelled) setLiveStatus(data);
       } catch {
         // transient poll failures are fine — try again next tick
@@ -110,7 +149,12 @@ export default function App() {
     poll();
     const id = setInterval(poll, 6000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [screen, placedOrder, phone]);
+  }, [screen, activeOrderId, phone]);
+
+  // Load order history whenever the customer opens "My orders".
+  useEffect(() => {
+    if (screen === "orders" && phone) loadHistory();
+  }, [screen, phone, loadHistory]);
 
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
   const cartTotal = Object.entries(cart).reduce((sum, [id, qty]) => {
@@ -156,7 +200,9 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({ customerName: name, phone, address, paymentMethod: payment, items }),
       });
-      setPlacedOrder(result);
+      saveProfile({ name, phone, address });
+      setHasProfile(true);
+      setActiveOrderId(result.orderId);
       setCart({});
       setScreen("status");
       loadMenu(); // refresh stock counts now that this order decremented them
@@ -227,7 +273,7 @@ export default function App() {
         )}
 
         {screen === "status" && (
-          <StatusScreen placedOrder={placedOrder} liveStatus={liveStatus} payment={payment} cartTotal={cartTotal} />
+          <StatusScreen activeOrderId={activeOrderId} liveStatus={liveStatus} payment={payment} cartTotal={cartTotal} onBack={() => setScreen(hasProfile ? "orders" : "menu")} onGoHome={() => setScreen("menu")} />
         )}
 
         {screen === "product" && (
@@ -240,7 +286,15 @@ export default function App() {
 
         {screen === "contact" && <ContactScreen onBack={() => setScreen("menu")} />}
 
-        {screen === "orders" && <OrdersScreen onBack={() => setScreen("menu")} onBrowse={() => setScreen("menu")} />}
+        {screen === "orders" && (
+          <OrdersScreen
+            hasProfile={hasProfile}
+            history={orderHistory} loading={historyLoading} error={historyError} onRetry={loadHistory}
+            onBack={() => setScreen("menu")} onBrowse={() => setScreen("menu")}
+            onViewOrder={(id) => { setActiveOrderId(id); setScreen("status"); }}
+            onForget={() => { clearSavedProfile(); setName(""); setPhone(""); setAddress(""); setHasProfile(false); setOrderHistory([]); }}
+          />
+        )}
 
         {navOpen && (
           <NavDrawer links={navLinks} active={screen} onSelect={(key) => { setScreen(key); setNavOpen(false); }} onClose={() => setNavOpen(false)} />
@@ -573,17 +627,65 @@ function ContactScreen({ onBack }) {
 }
 
 // ---------- My orders ----------
-function OrdersScreen({ onBack, onBrowse }) {
+const STATUS_LABEL = { received: "Received", preparing: "Preparing", out_for_delivery: "Out for delivery", delivered: "Delivered", cancelled: "Cancelled" };
+
+function OrdersScreen({ hasProfile, history, loading, error, onRetry, onBack, onBrowse, onViewOrder, onForget }) {
+  if (!hasProfile) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
+        <TopBar title="My orders" onBack={onBack} />
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "20px 30px", textAlign: "center" }}>
+          <ClipboardList size={30} color={muted500} style={{ marginBottom: 10 }} />
+          <p style={{ margin: 0, fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 17, color: ink }}>No past orders yet</p>
+          <p style={{ margin: "6px 0 18px", fontSize: 13, color: "#726A5E" }}>Place your first order and it'll show up here from then on.</p>
+          <button onClick={onBrowse} style={{ padding: "12px 22px", borderRadius: 14, border: "none", background: saffron, color: saffronText, fontFamily: FONT_BODY, fontWeight: 600, fontSize: 13.5, cursor: "pointer" }}>
+            Browse the menu
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
       <TopBar title="My orders" onBack={onBack} />
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "20px 30px", textAlign: "center" }}>
-        <ClipboardList size={30} color={muted500} style={{ marginBottom: 10 }} />
-        <p style={{ margin: 0, fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 17, color: ink }}>No past orders yet</p>
-        <p style={{ margin: "6px 0 18px", fontSize: 13, color: "#726A5E" }}>Orders you place will show up here.</p>
-        <button onClick={onBrowse} style={{ padding: "12px 22px", borderRadius: 14, border: "none", background: saffron, color: saffronText, fontFamily: FONT_BODY, fontWeight: 600, fontSize: 13.5, cursor: "pointer" }}>
-          Browse the menu
-        </button>
+      <div style={{ flex: 1, overflowY: "auto", padding: "4px 20px 20px" }}>
+        {loading && <p style={{ color: muted500, fontSize: 13, textAlign: "center", marginTop: 30 }}>Loading your orders…</p>}
+
+        {!loading && error && (
+          <div style={{ textAlign: "center", marginTop: 30 }}>
+            <p style={{ color: rust, fontSize: 13, margin: "0 0 10px" }}>{error}</p>
+            <button onClick={onRetry} style={{ padding: "9px 18px", borderRadius: 12, border: "none", background: saffron, color: saffronText, fontFamily: FONT_BODY, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+              Try again
+            </button>
+          </div>
+        )}
+
+        {!loading && !error && history.length === 0 && (
+          <p style={{ color: muted500, fontSize: 13, textAlign: "center", marginTop: 30 }}>No orders yet under this phone number.</p>
+        )}
+
+        {!loading && !error && history.map((order) => (
+          <button
+            key={order.id}
+            onClick={() => onViewOrder(order.id)}
+            style={{ width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0", borderBottom: `1px solid ${cardBorder}`, background: "none", border: "none", borderBottomWidth: 1, borderBottomStyle: "solid", borderBottomColor: cardBorder, cursor: "pointer" }}
+          >
+            <div>
+              <p style={{ margin: 0, fontFamily: FONT_MONO, fontWeight: 500, fontSize: 13, color: ink }}>{order.orderNumber}</p>
+              <p style={{ margin: "3px 0 0", fontSize: 12, color: "#726A5E" }}>
+                {new Date(order.createdAt).toLocaleDateString([], { month: "short", day: "numeric" })} · {STATUS_LABEL[order.status] || order.status}
+              </p>
+            </div>
+            <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 13.5, color: saffronText }}>{money(order.subtotal)}</span>
+          </button>
+        ))}
+
+        {!loading && !error && (
+          <button onClick={onForget} style={{ marginTop: 20, background: "none", border: "none", color: muted500, fontSize: 12, textDecoration: "underline", cursor: "pointer", padding: 0 }}>
+            Not you? Clear saved info on this device
+          </button>
+        )}
       </div>
     </div>
   );
@@ -597,8 +699,8 @@ const STAGES = [
   { key: "delivered", label: "Delivered" },
 ];
 
-function StatusScreen({ placedOrder, liveStatus, payment, cartTotal }) {
-  if (!placedOrder) {
+function StatusScreen({ activeOrderId, liveStatus, payment, cartTotal, onBack, onGoHome }) {
+  if (!activeOrderId) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 30 }}>
         <p style={{ fontSize: 13, color: muted500, textAlign: "center" }}>No order placed yet.</p>
@@ -606,23 +708,36 @@ function StatusScreen({ placedOrder, liveStatus, payment, cartTotal }) {
     );
   }
 
-  const status = liveStatus?.status || "received";
-  const currentIndex = Math.max(0, STAGES.findIndex((s) => s.key === status));
-  const total = liveStatus ? liveStatus.subtotal : cartTotal;
-  const payMethod = liveStatus ? liveStatus.paymentMethod : payment;
+  if (!liveStatus) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 30 }}>
+        <p style={{ fontSize: 13, color: muted500, textAlign: "center" }}>Loading order…</p>
+      </div>
+    );
+  }
+
+  const status = liveStatus.status;
+  const currentIndex = status === "cancelled" ? -1 : Math.max(0, STAGES.findIndex((s) => s.key === status));
+  const total = liveStatus.subtotal;
+  const payMethod = liveStatus.paymentMethod;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, alignItems: "center", padding: "36px 20px 28px" }}>
-      <div style={{ width: 52, height: 52, borderRadius: "50%", background: sage, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
-        <Check size={26} color={paper} />
+      {onBack && (
+        <button onClick={onBack} aria-label="Back" style={{ position: "absolute", top: 20, left: 16, border: "none", background: "none", cursor: "pointer", display: "flex", padding: 4 }}>
+          <ChevronLeft size={22} color={ink} />
+        </button>
+      )}
+      <div style={{ width: 52, height: 52, borderRadius: "50%", background: status === "cancelled" ? rust : sage, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+        {status === "cancelled" ? <TriangleAlert size={24} color={paper} /> : <Check size={26} color={paper} />}
       </div>
-      <p style={{ margin: 0, fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 22, textAlign: "center" }}>Order placed</p>
-      <p style={{ margin: "4px 0 24px", fontSize: 13, color: "#726A5E" }}>We'll text you as it moves along</p>
+      <p style={{ margin: 0, fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 22, textAlign: "center" }}>{status === "cancelled" ? "Order cancelled" : "Order placed"}</p>
+      <p style={{ margin: "4px 0 24px", fontSize: 13, color: "#726A5E" }}>{status === "cancelled" ? "Contact us if you weren't expecting this." : "We'll text you as it moves along"}</p>
 
       <div style={{ width: "100%", background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 18, padding: "20px 20px 22px", position: "relative" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 18 }}>
           <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: "#726A5E", letterSpacing: 1 }}>ORDER</span>
-          <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 18 }}>#{placedOrder.orderNumber}</span>
+          <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 18 }}>#{liveStatus.orderNumber}</span>
         </div>
 
         {STAGES.map((stage, i) => {
@@ -644,6 +759,15 @@ function StatusScreen({ placedOrder, liveStatus, payment, cartTotal }) {
           <span style={{ fontFamily: FONT_MONO, fontWeight: 500 }}>{money(total)}</span>
         </div>
       </div>
+
+      {onGoHome && (
+        <button
+          onClick={onGoHome}
+          style={{ width: "100%", marginTop: 18, padding: "14px", borderRadius: 16, border: "none", background: saffron, color: saffronText, fontFamily: FONT_BODY, fontWeight: 600, fontSize: 15, cursor: "pointer" }}
+        >
+          Back to homepage
+        </button>
+      )}
     </div>
   );
 }
