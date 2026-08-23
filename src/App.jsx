@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, Minus, ShoppingBag, ChevronLeft, Check, MapPin, Phone, User, Banknote, CreditCard, Circle, CheckCircle2, Menu, X, Home, MessageCircle, ClipboardList, Flame, TriangleAlert, Loader2 } from "lucide-react";
+import { Plus, Minus, ShoppingBag, ChevronLeft, Check, MapPin, Phone, User, Banknote, CreditCard, Circle, CheckCircle2, Menu, X, Home, MessageCircle, ClipboardList, Flame, TriangleAlert, Loader2, Clock, CalendarDays } from "lucide-react";
 
 // ---- Backend ----
 const API_BASE = "https://zewadty.onrender.com";
@@ -38,6 +38,63 @@ const MENU_CONTENT_BY_NAME = {
 const DEFAULT_CONTENT = { color: "#B7AE9C", heating: "Details coming soon.", ingredients: "Details coming soon.", allergens: "Details coming soon.", nutrition: [] };
 
 function money(n) { return `$${n.toFixed(2)}`; }
+
+// "2026-08-30" -> "Sunday, August 30". Parsed as a plain calendar date
+// (no time-of-day, no timezone shifting) since delivery_date has no
+// time component on the backend.
+function formatDeliveryLabel(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+}
+
+function formatCountdown(ms) {
+  const clamped = Math.max(0, ms);
+  const totalSeconds = Math.floor(clamped / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(days)} : ${pad(hours)} : ${pad(minutes)} : ${pad(seconds)}`;
+}
+
+function CountdownBanner({ options, nextDeadlineAt, nowTick, clockOffsetMs, loading, error, onRetry }) {
+  if (loading) {
+    return (
+      <div style={{ width: 390, maxWidth: "100%", textAlign: "center", padding: "10px 16px", fontSize: 12.5, color: "#726A5E" }}>
+        Loading delivery schedule…
+      </div>
+    );
+  }
+  if (error || !nextDeadlineAt || options.length === 0) {
+    return (
+      <div style={{ width: 390, maxWidth: "100%", textAlign: "center", padding: "10px 16px", fontSize: 12.5, color: rust }}>
+        {error || "No delivery windows are open right now."}
+        {onRetry && (
+          <button onClick={onRetry} style={{ marginLeft: 8, border: "none", background: "none", color: rust, textDecoration: "underline", cursor: "pointer", fontSize: 12.5 }}>
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const next = options[0];
+  const remainingMs = new Date(nextDeadlineAt).getTime() - (nowTick + clockOffsetMs);
+
+  return (
+    <div style={{ width: 390, maxWidth: "100%", background: aubergine, color: aubergineText, borderRadius: 16, padding: "12px 18px", marginBottom: 12, textAlign: "center" }}>
+      <p style={{ margin: 0, fontSize: 11.5, opacity: 0.75, letterSpacing: 0.5 }}>
+        Next delivery: {formatDeliveryLabel(next.deliveryDate)}
+      </p>
+      <p style={{ margin: "4px 0 0", fontFamily: FONT_MONO, fontWeight: 500, fontSize: 18, letterSpacing: 1 }}>
+        {formatCountdown(remainingMs)}
+      </p>
+      <p style={{ margin: "2px 0 0", fontSize: 10.5, opacity: 0.65 }}>days : hours : minutes : seconds to order</p>
+    </div>
+  );
+}
 
 // Remembers this customer on this device/browser after their first order —
 // no password, just "welcome back" the next time they open the app here.
@@ -92,6 +149,53 @@ export default function App() {
   const [menuItems, setMenuItems] = useState([]);
   const [menuLoading, setMenuLoading] = useState(true);
   const [menuError, setMenuError] = useState("");
+
+  // Scheduled delivery (Sunday/Wednesday, 2-day advance rule). The server is
+  // the source of truth for both "what's the deadline" and "what time is it
+  // right now" — clockOffsetMs lets the countdown tick using the server's
+  // clock instead of trusting the customer's device.
+  const [deliveryOptions, setDeliveryOptions] = useState([]);
+  const [nextDeadlineAt, setNextDeadlineAt] = useState(null);
+  const [clockOffsetMs, setClockOffsetMs] = useState(0);
+  const [scheduleLoading, setScheduleLoading] = useState(true);
+  const [scheduleError, setScheduleError] = useState("");
+  const [selectedDeliveryDate, setSelectedDeliveryDate] = useState(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  const loadSchedule = useCallback(async () => {
+    setScheduleLoading(true);
+    setScheduleError("");
+    try {
+      const data = await apiFetch("/schedule");
+      setDeliveryOptions(data.options);
+      setNextDeadlineAt(data.nextDeadlineAt);
+      setClockOffsetMs(new Date(data.serverNow).getTime() - Date.now());
+      setSelectedDeliveryDate((prev) => {
+        if (prev && data.options.some((o) => o.deliveryDate === prev)) return prev;
+        return data.options[0]?.deliveryDate || null;
+      });
+    } catch {
+      setScheduleError("Couldn't load delivery availability. The server may be waking up — try again in a moment.");
+    } finally {
+      setScheduleLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadSchedule(); }, [loadSchedule]);
+
+  // Tick every second for the countdown display.
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // When the deadline we're counting down to actually passes, refetch —
+  // the eligible options change (e.g. Sunday drops off, Wednesday appears).
+  useEffect(() => {
+    if (!nextDeadlineAt) return;
+    const serverNow = nowTick + clockOffsetMs;
+    if (serverNow >= new Date(nextDeadlineAt).getTime()) loadSchedule();
+  }, [nowTick, nextDeadlineAt, clockOffsetMs, loadSchedule]);
 
   const [activeOrderId, setActiveOrderId] = useState(null); // whichever order the status screen is showing
   const [liveStatus, setLiveStatus] = useState(null);       // polled from backend
@@ -192,13 +296,17 @@ export default function App() {
       setFormError("Choose how you'll pay.");
       return;
     }
+    if (!selectedDeliveryDate) {
+      setFormError("Choose a delivery day.");
+      return;
+    }
     setFormError("");
     setSubmitting(true);
     try {
       const items = Object.entries(cart).map(([menuItemId, qty]) => ({ menuItemId: Number(menuItemId), qty }));
       const result = await apiFetch("/orders", {
         method: "POST",
-        body: JSON.stringify({ customerName: name, phone, address, paymentMethod: payment, items }),
+        body: JSON.stringify({ customerName: name, phone, address, paymentMethod: payment, deliveryDate: selectedDeliveryDate, items }),
       });
       saveProfile({ name, phone, address });
       setHasProfile(true);
@@ -207,9 +315,12 @@ export default function App() {
       setScreen("status");
       loadMenu(); // refresh stock counts now that this order decremented them
     } catch (err) {
-      if (err.status === 409) {
+      if (err.status === 409 && err.data?.outOfStockItemId) {
         setFormError(`${err.data?.error || "An item just sold out."} Please update your cart.`);
         loadMenu();
+      } else if (err.status === 409) {
+        setFormError(err.data?.error || "That delivery day is no longer available. Please pick another.");
+        loadSchedule();
       } else if (err.status === 402) {
         setFormError(err.data?.error || "Your card was declined. Try again or pay cash on delivery.");
       } else {
@@ -233,8 +344,13 @@ export default function App() {
   ];
 
   return (
-    <div style={{ fontFamily: FONT_BODY, background: "#DED5C4", minHeight: "100vh", display: "flex", justifyContent: "center", padding: "32px 16px" }}>
+    <div style={{ fontFamily: FONT_BODY, background: "#DED5C4", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "32px 16px" }}>
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" />
+      <CountdownBanner
+        options={deliveryOptions} nextDeadlineAt={nextDeadlineAt}
+        nowTick={nowTick} clockOffsetMs={clockOffsetMs}
+        loading={scheduleLoading} error={scheduleError} onRetry={loadSchedule}
+      />
       <div style={{ width: 390, background: paper, borderRadius: 28, overflow: "hidden", boxShadow: "0 20px 50px rgba(36,30,32,0.25)", display: "flex", flexDirection: "column", minHeight: 780, position: "relative" }}>
 
         {screen === "menu" && (
@@ -264,6 +380,8 @@ export default function App() {
             phone={phone} setPhone={setPhone}
             address={address} setAddress={setAddress}
             payment={payment} setPayment={setPayment}
+            deliveryOptions={deliveryOptions} selectedDeliveryDate={selectedDeliveryDate} setSelectedDeliveryDate={setSelectedDeliveryDate}
+            scheduleLoading={scheduleLoading} scheduleError={scheduleError}
             cartTotal={cartTotal}
             formError={formError}
             submitting={submitting}
@@ -479,7 +597,7 @@ function CartScreen({ cart, menuItems, addItem, removeItem, cartTotal, onBack, o
 }
 
 // ---------- Checkout ----------
-function CheckoutScreen({ name, setName, phone, setPhone, address, setAddress, payment, setPayment, cartTotal, formError, submitting, onBack, onSubmit }) {
+function CheckoutScreen({ name, setName, phone, setPhone, address, setAddress, payment, setPayment, deliveryOptions, selectedDeliveryDate, setSelectedDeliveryDate, scheduleLoading, scheduleError, cartTotal, formError, submitting, onBack, onSubmit }) {
   const inputStyle = { width: "100%", boxSizing: "border-box", padding: "12px 14px", borderRadius: 12, border: `1px solid ${cardBorder}`, fontFamily: FONT_BODY, fontSize: 14, background: "#fff", color: ink };
   const labelStyle = { display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 500, color: "#726A5E", marginBottom: 6 };
 
@@ -499,6 +617,32 @@ function CheckoutScreen({ name, setName, phone, setPhone, address, setAddress, p
           <label style={labelStyle}><MapPin size={13} /> Delivery address</label>
           <input style={inputStyle} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Street, unit, gate code" />
         </div>
+
+        <p style={{ ...labelStyle, marginBottom: 10 }}><CalendarDays size={13} /> Choose your delivery day</p>
+        {scheduleLoading && <p style={{ fontSize: 13, color: muted500, margin: "0 0 20px" }}>Loading available delivery days…</p>}
+        {!scheduleLoading && scheduleError && <p style={{ fontSize: 13, color: rust, margin: "0 0 20px" }}>{scheduleError}</p>}
+        {!scheduleLoading && !scheduleError && deliveryOptions.length === 0 && (
+          <p style={{ fontSize: 13, color: rust, margin: "0 0 20px" }}>No delivery days are currently open for ordering.</p>
+        )}
+        {!scheduleLoading && !scheduleError && deliveryOptions.length > 0 && (
+          <div style={{ marginBottom: 20 }}>
+            {deliveryOptions.map((opt) => (
+              <button
+                key={opt.deliveryDate}
+                onClick={() => setSelectedDeliveryDate(opt.deliveryDate)}
+                style={{
+                  width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 10,
+                  padding: "12px 14px", borderRadius: 12, marginBottom: 8, cursor: "pointer",
+                  border: selectedDeliveryDate === opt.deliveryDate ? `2px solid ${aubergine}` : `1px solid ${cardBorder}`,
+                  background: selectedDeliveryDate === opt.deliveryDate ? "#F1E9DA" : "#fff",
+                }}
+              >
+                {selectedDeliveryDate === opt.deliveryDate ? <CheckCircle2 size={17} color={aubergine} /> : <Circle size={17} color={cardBorder} />}
+                <span style={{ fontSize: 13.5, fontWeight: 500, color: ink }}>{formatDeliveryLabel(opt.deliveryDate)}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <p style={{ ...labelStyle, marginBottom: 10 }}>How will you pay?</p>
         <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
@@ -674,7 +818,7 @@ function OrdersScreen({ hasProfile, history, loading, error, onRetry, onBack, on
             <div>
               <p style={{ margin: 0, fontFamily: FONT_MONO, fontWeight: 500, fontSize: 13, color: ink }}>{order.orderNumber}</p>
               <p style={{ margin: "3px 0 0", fontSize: 12, color: "#726A5E" }}>
-                {new Date(order.createdAt).toLocaleDateString([], { month: "short", day: "numeric" })} · {STATUS_LABEL[order.status] || order.status}
+                {order.deliveryDate ? formatDeliveryLabel(order.deliveryDate) : new Date(order.createdAt).toLocaleDateString([], { month: "short", day: "numeric" })} · {STATUS_LABEL[order.status] || order.status}
               </p>
             </div>
             <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 13.5, color: saffronText }}>{money(order.subtotal)}</span>
@@ -740,6 +884,15 @@ function StatusScreen({ activeOrderId, liveStatus, payment, cartTotal, onBack, o
           <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 18 }}>#{liveStatus.orderNumber}</span>
         </div>
 
+        {liveStatus.deliveryDate && status !== "cancelled" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#F1E9DA", borderRadius: 12, padding: "8px 12px", marginBottom: 18 }}>
+            <CalendarDays size={14} color={saffronText} />
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: saffronText }}>
+              Delivery: {formatDeliveryLabel(liveStatus.deliveryDate)}
+            </span>
+          </div>
+        )}
+
         {STAGES.map((stage, i) => {
           const done = i <= currentIndex;
           const isLast = i === STAGES.length - 1;
@@ -753,6 +906,15 @@ function StatusScreen({ activeOrderId, liveStatus, payment, cartTotal, onBack, o
             </div>
           );
         })}
+
+        <div style={{ borderTop: `1px dashed ${cardBorder}`, paddingTop: 14, marginBottom: 14 }}>
+          {liveStatus.items.map((it, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0", color: ink }}>
+              <span>{it.qty} × {it.name}</span>
+              <span style={{ fontFamily: FONT_MONO, color: "#726A5E" }}>{money((it.priceCents * it.qty) / 100)}</span>
+            </div>
+          ))}
+        </div>
 
         <div style={{ borderTop: `1px dashed ${cardBorder}`, paddingTop: 14, display: "flex", justifyContent: "space-between", fontSize: 13 }}>
           <span style={{ color: "#726A5E" }}>{payMethod === "cash" ? "Pay cash on delivery" : "Paid by card"}</span>
