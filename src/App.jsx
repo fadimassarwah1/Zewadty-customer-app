@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, Minus, ShoppingBag, ChevronLeft, Check, MapPin, Phone, User, Banknote, CreditCard, Circle, CheckCircle2, Menu, X, Home, MessageCircle, ClipboardList, Flame, TriangleAlert, Loader2, Clock, CalendarDays } from "lucide-react";
+import { Plus, Minus, ShoppingBag, ChevronLeft, Check, MapPin, Phone, User, Banknote, CreditCard, Circle, CheckCircle2, Menu, X, Home, MessageCircle, ClipboardList, Flame, TriangleAlert, Loader2, Clock, CalendarDays, Contrast } from "lucide-react";
 
 // ---- Backend ----
 const API_BASE = "https://zewadty.onrender.com";
@@ -39,9 +39,48 @@ const DEFAULT_CONTENT = { color: "#B7AE9C", heating: "Details coming soon.", ing
 
 function money(n) { return `$${n.toFixed(2)}`; }
 
-// "2026-08-30" -> "Sunday, August 30". Parsed as a plain calendar date
-// (no time-of-day, no timezone shifting) since delivery_date has no
-// time component on the backend.
+// Fallback if /pricing can't be reached — matches the backend's defaults
+// so the progress bar still shows something sensible.
+const DEFAULT_TIERS = [
+  { qty: 7, percent: 5 },
+  { qty: 10, percent: 11 },
+  { qty: 18, percent: 14 },
+];
+
+function getDiscountPercent(tiers, totalQty) {
+  let percent = 0;
+  for (const tier of tiers) {
+    if (totalQty >= tier.qty) percent = tier.percent;
+  }
+  return percent;
+}
+
+function BrandedLoader({ label }) {
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12 }}>
+      <style>{`
+        @keyframes kefi-bounce {
+          0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
+          40% { transform: translateY(-8px); opacity: 1; }
+        }
+      `}</style>
+      <div style={{ display: "flex", gap: 6 }}>
+        {[saffron, sage, rust].map((color, i) => (
+          <span
+            key={i}
+            style={{
+              width: 9, height: 9, borderRadius: "50%", background: color,
+              animation: `kefi-bounce 1.1s ease-in-out ${i * 0.15}s infinite`,
+            }}
+          />
+        ))}
+      </div>
+      <p style={{ margin: 0, fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 15, color: aubergine }}>Kefi</p>
+      {label && <p style={{ margin: 0, fontSize: 12.5, color: muted500 }}>{label}</p>}
+    </div>
+  );
+}
+
 function formatDeliveryLabel(dateStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
   const date = new Date(y, m - 1, d);
@@ -143,10 +182,32 @@ export default function App() {
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  const [largeText, setLargeText] = useState(() => {
+    try { return localStorage.getItem("kefi-large-text") === "1"; } catch { return false; }
+  });
+  const [highContrast, setHighContrast] = useState(() => {
+    try { return localStorage.getItem("kefi-high-contrast") === "1"; } catch { return false; }
+  });
+
+  function toggleLargeText() {
+    setLargeText((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("kefi-large-text", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  }
+  function toggleHighContrast() {
+    setHighContrast((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("kefi-high-contrast", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  }
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [returnScreen, setReturnScreen] = useState("menu");
 
   const [menuItems, setMenuItems] = useState([]);
+  const [pricingTiers, setPricingTiers] = useState([]);
   const [menuLoading, setMenuLoading] = useState(true);
   const [menuError, setMenuError] = useState("");
 
@@ -237,6 +298,11 @@ export default function App() {
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
+  // Bulk-discount tiers — fetched once, rarely change, no need to poll.
+  useEffect(() => {
+    apiFetch("/pricing").then((data) => setPricingTiers(data.tiers)).catch(() => setPricingTiers(DEFAULT_TIERS));
+  }, []);
+
   // Poll order status once an order has been placed and we're on the status screen.
   useEffect(() => {
     if (screen !== "status" || !activeOrderId) return;
@@ -265,6 +331,9 @@ export default function App() {
     const item = menuItems.find((m) => String(m.id) === String(id));
     return sum + (item ? item.price * qty : 0);
   }, 0);
+  const activeTiers = pricingTiers.length ? pricingTiers : DEFAULT_TIERS;
+  const discountPercent = getDiscountPercent(activeTiers, cartCount);
+  const discountedTotal = cartTotal * (100 - discountPercent) / 100;
 
   function addItem(id) {
     const item = menuItems.find((m) => String(m.id) === String(id));
@@ -344,7 +413,11 @@ export default function App() {
   ];
 
   return (
-    <div style={{ fontFamily: FONT_BODY, background: "#DED5C4", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "32px 16px" }}>
+    <div style={{
+      fontFamily: FONT_BODY, background: "#DED5C4", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "32px 16px",
+      zoom: largeText ? 1.15 : 1, // pragmatic text-size toggle — works in Chrome/Edge; not standard CSS
+      filter: highContrast ? "contrast(1.2) saturate(1.05)" : "none",
+    }}>
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" />
       <CountdownBanner
         options={deliveryOptions} nextDeadlineAt={nextDeadlineAt}
@@ -368,7 +441,7 @@ export default function App() {
         {screen === "cart" && (
           <CartScreen
             cart={cart} menuItems={menuItems} addItem={addItem} removeItem={removeItem}
-            cartTotal={cartTotal}
+            cartCount={cartCount} cartTotal={cartTotal} discountPercent={discountPercent} discountedTotal={discountedTotal} tiers={activeTiers}
             onBack={() => setScreen("menu")}
             onCheckout={goCheckout}
           />
@@ -382,7 +455,7 @@ export default function App() {
             payment={payment} setPayment={setPayment}
             deliveryOptions={deliveryOptions} selectedDeliveryDate={selectedDeliveryDate} setSelectedDeliveryDate={setSelectedDeliveryDate}
             scheduleLoading={scheduleLoading} scheduleError={scheduleError}
-            cartTotal={cartTotal}
+            cartTotal={cartTotal} discountPercent={discountPercent} discountedTotal={discountedTotal}
             formError={formError}
             submitting={submitting}
             onBack={() => setScreen("cart")}
@@ -415,7 +488,11 @@ export default function App() {
         )}
 
         {navOpen && (
-          <NavDrawer links={navLinks} active={screen} onSelect={(key) => { setScreen(key); setNavOpen(false); }} onClose={() => setNavOpen(false)} />
+          <NavDrawer
+            links={navLinks} active={screen} onSelect={(key) => { setScreen(key); setNavOpen(false); }} onClose={() => setNavOpen(false)}
+            largeText={largeText} onToggleLargeText={toggleLargeText}
+            highContrast={highContrast} onToggleHighContrast={toggleHighContrast}
+          />
         )}
 
       </div>
@@ -424,7 +501,7 @@ export default function App() {
 }
 
 // ---------- Nav drawer ----------
-function NavDrawer({ links, active, onSelect, onClose }) {
+function NavDrawer({ links, active, onSelect, onClose, largeText, onToggleLargeText, highContrast, onToggleHighContrast }) {
   return (
     <div style={{ position: "absolute", inset: 0, zIndex: 20, display: "flex" }}>
       <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(36,30,32,0.4)" }} />
@@ -449,9 +526,36 @@ function NavDrawer({ links, active, onSelect, onClose }) {
             </button>
           );
         })}
+
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.15)", marginTop: 12, paddingTop: 14 }}>
+          <p style={{ margin: "0 0 8px", fontSize: 11, letterSpacing: 1, textTransform: "uppercase", opacity: 0.6 }}>Accessibility</p>
+          <AccessibilityToggleRow icon={<TextIcon />} label="Larger text" active={largeText} onClick={onToggleLargeText} />
+          <AccessibilityToggleRow icon={<Contrast size={16} />} label="Higher contrast" active={highContrast} onClick={onToggleHighContrast} />
+        </div>
       </div>
     </div>
   );
+}
+
+function AccessibilityToggleRow({ icon, label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px", borderRadius: 10, border: "none", cursor: "pointer", background: "transparent", color: aubergineText, fontFamily: FONT_BODY, fontSize: 13.5 }}
+    >
+      <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {icon}
+        {label}
+      </span>
+      <span style={{ width: 34, height: 19, borderRadius: 10, background: active ? saffron : "rgba(255,255,255,0.2)", position: "relative", transition: "background 0.15s" }}>
+        <span style={{ position: "absolute", top: 2, left: active ? 17 : 2, width: 15, height: 15, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
+      </span>
+    </button>
+  );
+}
+
+function TextIcon() {
+  return <span style={{ fontSize: 13, fontWeight: 700, width: 16, textAlign: "center" }}>Aa</span>;
 }
 
 // ---------- Menu ----------
@@ -465,18 +569,20 @@ function MenuScreen({ activeCat, setActiveCat, menuItems, menuLoading, menuError
         <button onClick={onOpenNav} aria-label="Open menu" style={{ position: "absolute", top: 24, right: 18, border: "none", background: "rgba(255,255,255,0.12)", borderRadius: 10, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: aubergineText }}>
           <Menu size={18} />
         </button>
+        {cartCount > 0 && (
+          <button onClick={onOpenCart} aria-label="Open cart" style={{ position: "absolute", top: 24, right: 66, border: "none", background: "rgba(255,255,255,0.12)", borderRadius: 10, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: aubergineText }}>
+            <span style={{ position: "relative", display: "flex" }}>
+              <ShoppingBag size={17} />
+              <span style={{ position: "absolute", top: -7, right: -7, background: rust, color: "#fff", borderRadius: "50%", width: 15, height: 15, fontSize: 9.5, display: "flex", alignItems: "center", justifyContent: "center" }}>{cartCount}</span>
+            </span>
+          </button>
+        )}
         <p style={{ margin: 0, fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.7, fontWeight: 500 }}>Delivery only</p>
         <h1 style={{ margin: "4px 0 2px", fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 32 }}>Kefi</h1>
         <p style={{ margin: 0, fontSize: 13, opacity: 0.75 }}>Mediterranean grill, brought to your door</p>
       </div>
 
-      {menuLoading && (
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: muted500 }}>
-          <Loader2 size={22} className="spin" style={{ animation: "spin 1s linear infinite" }} />
-          <p style={{ fontSize: 13, margin: 0 }}>Loading the menu…</p>
-          <style>{"@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }"}</style>
-        </div>
-      )}
+      {menuLoading && <BrandedLoader label="Loading the menu…" />}
 
       {!menuLoading && menuError && (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: "0 30px", textAlign: "center" }}>
@@ -499,39 +605,37 @@ function MenuScreen({ activeCat, setActiveCat, menuItems, menuLoading, menuError
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", padding: "12px 20px", paddingBottom: cartCount > 0 ? 96 : 24 }}>
-            {items.map((item) => {
-              const qty = cart[item.id] || 0;
-              const outOfStock = item.stockCount === 0;
-              return (
-                <div key={item.id} style={{ display: "flex", gap: 12, padding: "14px 0", borderBottom: `1px solid ${cardBorder}`, cursor: "pointer", opacity: outOfStock ? 0.55 : 1 }} onClick={() => onOpenProduct(item.id)}>
-                  <div style={{ width: 56, height: 56, borderRadius: 14, background: item.color, flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ margin: 0, fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 16, color: ink }}>{item.name}</p>
-                    <p style={{ margin: "2px 0 6px", fontSize: 12.5, color: "#726A5E", lineHeight: 1.4 }}>{item.description}</p>
-                    <p style={{ margin: 0, fontFamily: FONT_MONO, fontWeight: 500, fontSize: 13, color: saffronText }}>
-                      {money(item.price)} {outOfStock && <span style={{ color: rust, fontWeight: 600 }}>· Sold out</span>}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+              {items.map((item) => {
+                const qty = cart[item.id] || 0;
+                const outOfStock = item.stockCount === 0;
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => onOpenProduct(item.id)}
+                    style={{ display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer", opacity: outOfStock ? 0.5 : 1, position: "relative" }}
+                  >
+                    <div style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: 12, background: item.color, marginBottom: 6 }} />
+                    {!outOfStock && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); addItem(item.id); }}
+                        aria-label={`Add ${item.name}`}
+                        style={{ position: "absolute", top: "calc(100% - 6px - 22px)", right: 0, width: 22, height: 22, borderRadius: "50%", border: `2px solid ${paper}`, cursor: "pointer", background: saffron, color: saffronText, display: "flex", alignItems: "center", justifyContent: "center" }}
+                      >
+                        <Plus size={12} />
+                      </button>
+                    )}
+                    {qty > 0 && (
+                      <span style={{ position: "absolute", top: 4, left: 4, background: rust, color: "#fff", borderRadius: "50%", width: 17, height: 17, fontSize: 10, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center" }}>{qty}</span>
+                    )}
+                    <p style={{ margin: 0, fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 11.5, color: ink, textAlign: "center", lineHeight: 1.25, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.name}</p>
+                    <p style={{ margin: "2px 0 0", fontFamily: FONT_MONO, fontWeight: 500, fontSize: 10.5, color: outOfStock ? rust : saffronText }}>
+                      {outOfStock ? "Sold out" : money(item.price)}
                     </p>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
-                    {outOfStock ? null : qty === 0 ? (
-                      <button onClick={() => addItem(item.id)} aria-label={`Add ${item.name}`} style={{ width: 34, height: 34, borderRadius: "50%", border: "none", cursor: "pointer", background: saffron, color: saffronText, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <Plus size={16} />
-                      </button>
-                    ) : (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#F1E9DA", borderRadius: 20, padding: "4px 6px" }}>
-                        <button onClick={() => removeItem(item.id)} aria-label={`Remove ${item.name}`} style={{ width: 26, height: 26, borderRadius: "50%", border: "none", cursor: "pointer", background: paper, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <Minus size={14} color={ink} />
-                        </button>
-                        <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 13, minWidth: 12, textAlign: "center" }}>{qty}</span>
-                        <button onClick={() => addItem(item.id)} aria-label={`Add another ${item.name}`} style={{ width: 26, height: 26, borderRadius: "50%", border: "none", cursor: "pointer", background: saffron, color: saffronText, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <Plus size={14} />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </>
       )}
@@ -552,14 +656,64 @@ function MenuScreen({ activeCat, setActiveCat, menuItems, menuLoading, menuError
   );
 }
 
+// ---------- Bulk discount progress bar ----------
+function DiscountProgressBar({ cartCount, tiers, discountPercent }) {
+  if (cartCount === 0 || tiers.length === 0) return null;
+  const maxTier = tiers[tiers.length - 1];
+  const nextTier = tiers.find((t) => cartCount < t.qty);
+  const progressTarget = nextTier ? nextTier.qty : maxTier.qty;
+  const progressFraction = Math.min(1, cartCount / progressTarget);
+
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 16, padding: "14px 16px", marginBottom: 14 }}>
+      <p style={{ margin: "0 0 10px", fontSize: 13, fontWeight: 600, color: ink }}>
+        {discountPercent > 0
+          ? `You've unlocked ${discountPercent}% off 🎉`
+          : `Save up to ${maxTier.percent}% on your order`}
+      </p>
+
+      <div style={{ height: 8, borderRadius: 4, background: "#F1E9DA", overflow: "hidden", marginBottom: 10 }}>
+        <div style={{ height: "100%", width: `${progressFraction * 100}%`, background: sage, borderRadius: 4, transition: "width 0.2s" }} />
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: nextTier ? 10 : 0 }}>
+        {tiers.map((tier) => {
+          const reached = cartCount >= tier.qty;
+          return (
+            <span
+              key={tier.qty}
+              style={{
+                fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 20,
+                background: reached ? sage : "#F1E9DA",
+                color: reached ? "#fff" : muted500,
+              }}
+            >
+              {tier.percent}%
+            </span>
+          );
+        })}
+      </div>
+
+      {nextTier && (
+        <p style={{ margin: 0, fontSize: 12, color: "#726A5E" }}>
+          Add {nextTier.qty - cartCount} more item{nextTier.qty - cartCount === 1 ? "" : "s"} to unlock {nextTier.percent}% off
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ---------- Cart ----------
-function CartScreen({ cart, menuItems, addItem, removeItem, cartTotal, onBack, onCheckout }) {
+function CartScreen({ cart, menuItems, addItem, removeItem, cartCount, cartTotal, discountPercent, discountedTotal, tiers, onBack, onCheckout }) {
   const entries = Object.entries(cart);
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
       <TopBar title="Your cart" onBack={onBack} />
       <div style={{ flex: 1, overflowY: "auto", padding: "8px 20px" }}>
         {entries.length === 0 && <p style={{ color: "#726A5E", fontSize: 14, marginTop: 40, textAlign: "center" }}>Your cart is empty.</p>}
+
+        {entries.length > 0 && <DiscountProgressBar cartCount={cartCount} tiers={tiers} discountPercent={discountPercent} />}
+
         {entries.map(([id, qty]) => {
           const item = menuItems.find((m) => String(m.id) === String(id));
           if (!item) return null;
@@ -584,9 +738,15 @@ function CartScreen({ cart, menuItems, addItem, removeItem, cartTotal, onBack, o
         })}
       </div>
       <div style={{ padding: 20, borderTop: `1px solid ${cardBorder}` }}>
+        {discountPercent > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 12.5, color: "#726A5E" }}>Subtotal</span>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 12.5, color: "#726A5E", textDecoration: "line-through" }}>{money(cartTotal)}</span>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
-          <span style={{ fontSize: 14, color: "#726A5E" }}>Total</span>
-          <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 16 }}>{money(cartTotal)}</span>
+          <span style={{ fontSize: 14, color: "#726A5E" }}>{discountPercent > 0 ? `Total (${discountPercent}% off)` : "Total"}</span>
+          <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 16 }}>{money(discountedTotal)}</span>
         </div>
         <button onClick={onCheckout} disabled={entries.length === 0} style={{ width: "100%", padding: "14px", borderRadius: 16, border: "none", background: entries.length === 0 ? "#D8CFC0" : saffron, color: saffronText, fontFamily: FONT_BODY, fontWeight: 600, fontSize: 15, cursor: entries.length === 0 ? "default" : "pointer" }}>
           Go to checkout
@@ -597,7 +757,7 @@ function CartScreen({ cart, menuItems, addItem, removeItem, cartTotal, onBack, o
 }
 
 // ---------- Checkout ----------
-function CheckoutScreen({ name, setName, phone, setPhone, address, setAddress, payment, setPayment, deliveryOptions, selectedDeliveryDate, setSelectedDeliveryDate, scheduleLoading, scheduleError, cartTotal, formError, submitting, onBack, onSubmit }) {
+function CheckoutScreen({ name, setName, phone, setPhone, address, setAddress, payment, setPayment, deliveryOptions, selectedDeliveryDate, setSelectedDeliveryDate, scheduleLoading, scheduleError, cartTotal, discountPercent, discountedTotal, formError, submitting, onBack, onSubmit }) {
   const inputStyle = { width: "100%", boxSizing: "border-box", padding: "12px 14px", borderRadius: 12, border: `1px solid ${cardBorder}`, fontFamily: FONT_BODY, fontSize: 14, background: "#fff", color: ink };
   const labelStyle = { display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 500, color: "#726A5E", marginBottom: 6 };
 
@@ -659,9 +819,15 @@ function CheckoutScreen({ name, setName, phone, setPhone, address, setAddress, p
         {formError && <p style={{ color: rust, fontSize: 13, margin: "0 0 12px" }}>{formError}</p>}
       </div>
       <div style={{ padding: 20, borderTop: `1px solid ${cardBorder}` }}>
+        {discountPercent > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 12.5, color: "#726A5E" }}>Subtotal</span>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 12.5, color: "#726A5E", textDecoration: "line-through" }}>{money(cartTotal)}</span>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
-          <span style={{ fontSize: 14, color: "#726A5E" }}>Total</span>
-          <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 16 }}>{money(cartTotal)}</span>
+          <span style={{ fontSize: 14, color: "#726A5E" }}>{discountPercent > 0 ? `Total (${discountPercent}% off)` : "Total"}</span>
+          <span style={{ fontFamily: FONT_MONO, fontWeight: 500, fontSize: 16 }}>{money(discountedTotal)}</span>
         </div>
         <button onClick={onSubmit} disabled={submitting} style={{ width: "100%", padding: "14px", borderRadius: 16, border: "none", background: submitting ? "#D8CFC0" : saffron, color: saffronText, fontFamily: FONT_BODY, fontWeight: 600, fontSize: 15, cursor: submitting ? "default" : "pointer" }}>
           {submitting ? "Placing order…" : "Place order"}
@@ -916,6 +1082,12 @@ function StatusScreen({ activeOrderId, liveStatus, payment, cartTotal, onBack, o
           ))}
         </div>
 
+        {liveStatus.discountPercent > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: sage, fontWeight: 600, marginBottom: 6 }}>
+            <span>Bulk discount applied</span>
+            <span>-{liveStatus.discountPercent}%</span>
+          </div>
+        )}
         <div style={{ borderTop: `1px dashed ${cardBorder}`, paddingTop: 14, display: "flex", justifyContent: "space-between", fontSize: 13 }}>
           <span style={{ color: "#726A5E" }}>{payMethod === "cash" ? "Pay cash on delivery" : "Paid by card"}</span>
           <span style={{ fontFamily: FONT_MONO, fontWeight: 500 }}>{money(total)}</span>
